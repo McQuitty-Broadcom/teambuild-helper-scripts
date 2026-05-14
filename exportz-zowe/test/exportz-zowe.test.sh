@@ -74,7 +74,9 @@ test_dry_run_derives_exportz_args() {
 
   assert_contains "$output" "exportz --environment DEV --stage-number 1 --system PAYROLL --subsystem API"
   assert_contains "$output" "--base-url https://endevor.example.com:9443/EndevorService/api/v2"
-  assert_contains "$output" "--instance ENDEVOR --username USER1 --password PASS1"
+  assert_contains "$output" "--instance ENDEVOR"
+  assert_not_contains "$output" "--username"
+  assert_not_contains "$output" "--password"
   assert_contains "$output" "--dataset-hlq USER1.TEAMBUILD"
 }
 
@@ -91,27 +93,6 @@ test_does_not_duplicate_caller_flags() {
   assert_contains "$output" "--environment QA --dataset-hlq USER1.TEAMBUILD"
 }
 
-test_uses_environment_credentials() {
-  local dir output
-  dir="$TMP_ROOT/env-creds"
-  mkdir -p "$dir"
-  write_config "$dir"
-  python3 - "$dir/zowe.config.json" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as handle:
-    config = json.load(handle)
-del config["profiles"]["base"]
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(config, handle)
-PY
-
-  output="$(ZOWE_OPT_USER=SECUSER ZOWE_OPT_PASSWORD=SECPASS "$SCRIPT" --config "$dir/zowe.config.json" --dry-run)"
-
-  assert_contains "$output" "--username SECUSER --password SECPASS"
-}
 
 test_maps_reject_unauthorized_to_insecure() {
   local dir output
@@ -171,7 +152,6 @@ test_dry_run_quotes_arguments() {
 
 test_dry_run_derives_exportz_args
 test_does_not_duplicate_caller_flags
-test_uses_environment_credentials
 test_maps_reject_unauthorized_to_insecure
 test_respects_existing_insecure_flag
 test_dry_run_quotes_arguments

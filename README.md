@@ -61,7 +61,7 @@ exportz-zowe --additional-flags
    chmod +x sync-up exportz-zowe
    ```
 
-3. Optionally, add the scripts directory to your PATH for global access.
+3. Optionally, add the scripts directory to your PATH for global access.  I use $HOME/bin, which is also wher syncz and exportz are installed.
 
 ## Configuration
 
@@ -71,7 +71,7 @@ exportz-zowe --additional-flags
 ## Troubleshooting
 
 - **Sync-up not finding config:** Check that `syncz.yaml` exists in the current or parent directories.
-- **Exportz-Zowe errors:** Ensure Zowe CLI is installed and `zowe.config.json` is valid and accessible.
+- **Exportz-Zowe errors:** Ensure `zowe.config.json` is valid and accessible.
 - **Permission issues:** Run with appropriate user permissions or use `sudo` if necessary.
 
 ## Contributing
@@ -82,7 +82,7 @@ Contributions are welcome! Please submit issues or pull requests for improvement
 
 MIT License
 
-Copyright (c) [year] [fullname]
+Copyright (c) [2026] [Thomas McQuitty]
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

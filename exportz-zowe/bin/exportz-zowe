@@ -18,7 +18,7 @@ Wrapper options:
 
 Derived exportz options:
   --environment, --stage-number, --system, --subsystem, --base-url,
-  --instance, --username, --password
+  --instance
 
 Pass exportz-only options such as --dataset-hlq, --processor-directory, --insecure,
 --no-files, --no-deps, --debug, or --trace normally after the wrapper options.
@@ -139,8 +139,6 @@ DERIVED_FLAGS = {
     "--subsystem",
     "--base-url",
     "--instance",
-    "--username",
-    "--password",
 }
 
 config_path = sys.argv[1]
@@ -223,13 +221,6 @@ def provided_flags(args):
     return flags
 
 
-def value_from_env(*names):
-    for name in names:
-        if os.environ.get(name):
-            return os.environ[name]
-    return None
-
-
 config = load_merged_config(config_path, user_config_path)
 profiles = collect_profiles(config.get("profiles", {}))
 defaults = config.get("defaults", {})
@@ -251,8 +242,6 @@ derived = [
     ("--subsystem", location_props.get("subsystem")),
     ("--base-url", build_base_url(connection)),
     ("--instance", location_props.get("instance")),
-    ("--username", connection.get("user") or value_from_env("ZOWE_OPT_USER", "ZOWE_OPT_USERNAME", "ENDEVOR_USER")),
-    ("--password", connection.get("password") or value_from_env("ZOWE_OPT_PASSWORD", "ENDEVOR_PASSWORD")),
 ]
 
 provided = provided_flags(passthrough)
@@ -272,8 +261,7 @@ if connection.get("rejectUnauthorized") is False and "--insecure" not in provide
 if missing:
     joined = ", ".join(missing)
     raise ValueError(
-        f"Missing values for {joined}. Check zowe.config.json, zowe.config.user.json, "
-        "or set ZOWE_OPT_USER/ZOWE_OPT_PASSWORD for secure credentials."
+        f"Missing values for {joined}. Check zowe.config.json or zowe.config.user.json."
     )
 
 for arg in [*args, *passthrough]:
