@@ -39,7 +39,7 @@ sync-up
 **Usage Example:**
 ```bash
 # Assumes zowe.config.json is in the current or parent directory
-exportz-zowe --additional-flags
+exportz-zowe --dataset-hlq xxx.teambuild
 ```
 
 ## Prerequisites
@@ -82,7 +82,7 @@ Contributions are welcome! Please submit issues or pull requests for improvement
 
 MIT License
 
-Copyright (c) [2026] [Thomas McQuitty]
+Copyright (c) [2026]
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
