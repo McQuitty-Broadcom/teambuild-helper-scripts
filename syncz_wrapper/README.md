@@ -22,7 +22,7 @@ ancestor config.
 - `syncz-up.ps1` - PowerShell wrapper for Windows, macOS, or Linux.
 - `syncz-up.cmd` - Command Prompt wrapper for Windows.
 
-## Unix install
+## MacOS / Unix install
 
 Make the script executable and put it somewhere on your `PATH`:
 
