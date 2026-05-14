@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: exportz-zowe [wrapper options] [exportz options]
+
+Reads Zowe team configuration and invokes TeamBuild exportz with matching Endevor settings.
+
+Wrapper options:
+  --config <path>                    zowe.config.json path
+  --user-config <path>               zowe.config.user.json path
+  --endevor-profile <name>           endevor profile name; defaults to config defaults
+  --endevor-location-profile <name>  endevor-location profile name; defaults to config defaults
+  --exportz-bin <path>               exportz executable; default: exportz
+  --dry-run                          print the exportz command without running it
+  -h, --help                         show this help
+
+Derived exportz options:
+  --environment, --stage-number, --system, --subsystem, --base-url,
+  --instance, --username, --password
+
+Pass exportz-only options such as --dataset-hlq, --processor-directory, --insecure,
+--no-files, --no-deps, --debug, or --trace normally after the wrapper options.
+EOF
+}
+
+die() {
+  printf 'exportz-zowe: %s\n' "$*" >&2
+  exit 1
+}
+
+find_config() {
+  local current candidate parent zowe_home global_config
+
+  current="$(pwd -P)"
+  while :; do
+    candidate="$current/zowe.config.json"
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+
+    parent="$(dirname "$current")"
+    [[ "$parent" == "$current" ]] && break
+    current="$parent"
+  done
+
+  zowe_home="${ZOWE_CLI_HOME:-$HOME/.zowe}"
+  global_config="$zowe_home/zowe.config.json"
+  [[ -f "$global_config" ]] && printf '%s\n' "$global_config"
+}
+
+default_user_config() {
+  local config_path="$1"
+  local user_path="${config_path%.*}.user.json"
+  [[ -f "$user_path" ]] && printf '%s\n' "$user_path"
+}
+
+shell_join() {
+  local arg
+  printf '%q' "$1"
+  shift
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+}
+
+config_path=""
+user_config_path=""
+endevor_profile=""
+endevor_location_profile=""
+exportz_bin="exportz"
+dry_run=0
+passthrough=()
+
+while (($# > 0)); do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --config|--user-config|--endevor-profile|--endevor-location-profile|--exportz-bin)
+      (($# >= 2)) || die "$1 requires a value"
+      case "$1" in
+        --config) config_path="$2" ;;
+        --user-config) user_config_path="$2" ;;
+        --endevor-profile) endevor_profile="$2" ;;
+        --endevor-location-profile) endevor_location_profile="$2" ;;
+        --exportz-bin) exportz_bin="$2" ;;
+      esac
+      shift 2
+      ;;
+    --config=*|--user-config=*|--endevor-profile=*|--endevor-location-profile=*|--exportz-bin=*)
+      option="${1%%=*}"
+      value="${1#*=}"
+      case "$option" in
+        --config) config_path="$value" ;;
+        --user-config) user_config_path="$value" ;;
+        --endevor-profile) endevor_profile="$value" ;;
+        --endevor-location-profile) endevor_location_profile="$value" ;;
+        --exportz-bin) exportz_bin="$value" ;;
+      esac
+      shift
+      ;;
+    *)
+      passthrough+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$config_path" ]]; then
+  config_path="$(find_config || true)"
+fi
+[[ -n "$config_path" ]] || die "Could not find zowe.config.json. Use --config <path> or run from a Zowe team-config project."
+
+if [[ -z "$user_config_path" ]]; then
+  user_config_path="$(default_user_config "$config_path" || true)"
+fi
+
+args_file="$(mktemp "${TMPDIR:-/tmp}/exportz-zowe.XXXXXX")"
+trap 'rm -f "$args_file"' EXIT
+
+set +u
+python3 - "$config_path" "$user_config_path" "$endevor_profile" "$endevor_location_profile" "${passthrough[@]}" >"$args_file" <<'PY'
+import json
+import os
+import sys
+
+DERIVED_FLAGS = {
+    "--environment",
+    "--stage-number",
+    "--system",
+    "--subsystem",
+    "--base-url",
+    "--instance",
+    "--username",
+    "--password",
+}
+
+config_path = sys.argv[1]
+user_config_path = sys.argv[2] or None
+endevor_profile = sys.argv[3] or None
+endevor_location_profile = sys.argv[4] or None
+passthrough = sys.argv[5:]
+
+
+def read_json(path):
+    with open(path, "r", encoding="utf-8-sig") as handle:
+        return json.load(handle)
+
+
+def is_plain_object(value):
+    return isinstance(value, dict)
+
+
+def deep_merge(left, right):
+    if not is_plain_object(left) or not is_plain_object(right):
+        return left if right is None else right
+
+    merged = dict(left)
+    for key, value in right.items():
+        merged[key] = deep_merge(left.get(key), value)
+    return merged
+
+
+def load_merged_config(base_path, user_path):
+    base = read_json(base_path)
+    if not user_path or not os.path.exists(user_path):
+        return base
+    return deep_merge(base, read_json(user_path))
+
+
+def collect_profiles(profiles, inherited_properties=None, collected=None):
+    inherited_properties = inherited_properties or {}
+    collected = collected or []
+
+    for name, profile in profiles.items():
+        properties = {**inherited_properties, **profile.get("properties", {})}
+        collected.append({
+            "name": name,
+            "type": profile.get("type"),
+            "properties": properties,
+        })
+        if profile.get("profiles"):
+            collect_profiles(profile["profiles"], properties, collected)
+
+    return collected
+
+
+def select_profile(profiles, profile_type, explicit_name=None, defaults=None, required=True):
+    defaults = defaults or {}
+    wanted_name = explicit_name or defaults.get(profile_type)
+    if wanted_name:
+        match = next((profile for profile in profiles if profile["name"] == wanted_name), None)
+        if not match and required:
+            raise ValueError(f"Could not find {profile_type} profile '{wanted_name}' in zowe.config.json.")
+        return match
+
+    return next((profile for profile in profiles if profile["type"] == profile_type), None)
+
+
+def build_base_url(profile):
+    if not profile.get("host"):
+        return None
+    protocol = profile.get("protocol") or "https"
+    port = f":{profile['port']}" if profile.get("port") else ""
+    base_path = str(profile.get("basePath") or "EndevorService/api/v2").strip("/")
+    return f"{protocol}://{profile['host']}{port}/{base_path}"
+
+
+def provided_flags(args):
+    flags = set()
+    for arg in args:
+        flag = arg.split("=", 1)[0] if "=" in arg else arg
+        if flag in DERIVED_FLAGS or flag == "--insecure":
+            flags.add(flag)
+    return flags
+
+
+def value_from_env(*names):
+    for name in names:
+        if os.environ.get(name):
+            return os.environ[name]
+    return None
+
+
+config = load_merged_config(config_path, user_config_path)
+profiles = collect_profiles(config.get("profiles", {}))
+defaults = config.get("defaults", {})
+endevor = select_profile(profiles, "endevor", endevor_profile, defaults)
+location = select_profile(profiles, "endevor-location", endevor_location_profile, defaults)
+base = select_profile(profiles, "base", None, defaults, required=False)
+
+if not endevor:
+    raise ValueError("Could not find an endevor profile in zowe.config.json.")
+if not location:
+    raise ValueError("Could not find an endevor-location profile in zowe.config.json.")
+
+connection = {**(base or {}).get("properties", {}), **endevor.get("properties", {})}
+location_props = location.get("properties", {})
+derived = [
+    ("--environment", location_props.get("environment")),
+    ("--stage-number", location_props.get("stageNumber")),
+    ("--system", location_props.get("system")),
+    ("--subsystem", location_props.get("subsystem")),
+    ("--base-url", build_base_url(connection)),
+    ("--instance", location_props.get("instance")),
+    ("--username", connection.get("user") or value_from_env("ZOWE_OPT_USER", "ZOWE_OPT_USERNAME", "ENDEVOR_USER")),
+    ("--password", connection.get("password") or value_from_env("ZOWE_OPT_PASSWORD", "ENDEVOR_PASSWORD")),
+]
+
+provided = provided_flags(passthrough)
+args = []
+missing = []
+for flag, value in derived:
+    if flag in provided:
+        continue
+    if value is None or value == "":
+        missing.append(flag)
+        continue
+    args.extend([flag, str(value)])
+
+if connection.get("rejectUnauthorized") is False and "--insecure" not in provided:
+    args.append("--insecure")
+
+if missing:
+    joined = ", ".join(missing)
+    raise ValueError(
+        f"Missing values for {joined}. Check zowe.config.json, zowe.config.user.json, "
+        "or set ZOWE_OPT_USER/ZOWE_OPT_PASSWORD for secure credentials."
+    )
+
+for arg in [*args, *passthrough]:
+    sys.stdout.write(arg)
+    sys.stdout.write("\0")
+PY
+set -u
+
+exportz_args=()
+if [[ -s "$args_file" ]]; then
+  while IFS= read -r -d '' arg; do
+    exportz_args+=("$arg")
+  done <"$args_file"
+fi
+
+if ((dry_run)); then
+  shell_join "$exportz_bin" "${exportz_args[@]}"
+  printf '\n'
+  exit 0
+fi
+
+exec "$exportz_bin" "${exportz_args[@]}"
